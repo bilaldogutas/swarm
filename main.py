@@ -4,7 +4,10 @@ from typing import List
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from processing.risk import simple_risk_from_fft, label_from_risk
+from processing.risk import simple_risk_from_fft, label_from_risk, ml_risk_from_fft
+
+from database.db import init_db, insert_prediction, get_history_for_hive
+
 
 from processing.features import (
     mean,
@@ -23,6 +26,12 @@ app = FastAPI(
     version="0.1.0"
 )
 
+@app.on_event("startup")
+def on_startup():
+    # Ensure the SQLite database and table exist
+    init_db()
+
+
 class FeatureDebugResponse(BaseModel):
     hive_id: int
     timestamp: datetime
@@ -35,6 +44,12 @@ class FeatureDebugResponse(BaseModel):
     high_band_energy: float
 
 
+class PredictionRecord(BaseModel):
+    id: int
+    hive_id: int
+    timestamp: datetime
+    swarm_risk: float
+    risk_level: str
 
 
 # 2. Define the shape of the data the backend expects
@@ -68,7 +83,7 @@ def predict_swarm(request: PredictionRequest):
     """
 
     # 1. Compute a risk number based on the FFT values
-    swarm_risk = simple_risk_from_fft(request.fft_values)
+    swarm_risk = ml_risk_from_fft(request.fft_values)
 
     # 2. Turn that number into a text label
     if swarm_risk < 0.4:
@@ -77,6 +92,15 @@ def predict_swarm(request: PredictionRequest):
         risk_level = "Watch"
     else:
         risk_level = "High Risk"
+
+    # NEW: save this prediction into SQLite
+    insert_prediction(
+        hive_id=request.hive_id,
+        timestamp=request.timestamp,
+        swarm_risk=swarm_risk,
+        risk_level=risk_level,
+    )
+
 
     # 3. Build the response object
     return PredictionResponse(
@@ -117,3 +141,14 @@ def debug_features(request: PredictionRequest):
         high_band_energy=high_energy,
     )
 
+@app.get("/history/{hive_id}", response_model=List[PredictionRecord])
+def get_history(hive_id: int, limit: int = 100):
+    """
+    Return recent prediction history for a given hive.
+
+    - hive_id: which hive you care about
+    - limit: max number of records (optional, default 100)
+    """
+    rows = get_history_for_hive(hive_id=hive_id, limit=limit)
+    # Convert list of dicts into list of Pydantic models
+    return [PredictionRecord(**row) for row in rows]

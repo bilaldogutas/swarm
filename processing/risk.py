@@ -1,6 +1,10 @@
 # processing/risk.py
 
+import joblib
+import numpy as np
+from pathlib import Path
 from typing import List
+
 
 from processing.features import (
     mean,
@@ -64,3 +68,40 @@ def label_from_risk(swarm_risk: float) -> str:
         return "Watch"
     else:
         return "High Risk"
+
+
+_model = None
+
+def get_model():
+    global _model
+    if _model is None:
+        model_path = Path("models/swarm_model.pkl")
+        _model = joblib.load(model_path)
+    return _model
+
+def ml_risk_from_fft(fft_values: List[float]) -> float:
+    from processing.features import (
+        mean,
+        maximum,
+        minimum,
+        energy,
+        std_dev,
+        low_high_band_energy,
+    )
+
+    abs_vals = [abs(v) for v in fft_values]
+
+    avg = mean(abs_vals)
+    max_val = maximum(abs_vals)
+    min_val = minimum(abs_vals)
+    en = energy(abs_vals)
+    sd = std_dev(abs_vals)
+    low_en, high_en = low_high_band_energy(abs_vals)
+
+    feature_vector = np.array([[avg, max_val, min_val, en, sd, low_en, high_en]])
+
+    model = get_model()
+    pred_prob = model.predict_proba(feature_vector)[0][1]
+
+    return float(pred_prob)
+
